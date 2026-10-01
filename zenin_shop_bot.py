@@ -212,16 +212,7 @@ async def is_subscribed(bot: Bot, user_id: int) -> bool:
 
 
 async def require_subscription(event: Message | CallbackQuery, bot: Bot) -> bool:
-    uid = event.from_user.id
-    if await is_subscribed(bot, uid):
-        return True
-    text = "Для использования магазина подпишитесь на канал и нажмите «Проверить подписку»."
-    if isinstance(event, CallbackQuery):
-        await event.message.answer(text, reply_markup=subscribe_keyboard())
-        await event.answer()
-    else:
-        await event.answer(text, reply_markup=subscribe_keyboard())
-    return False
+    return True
 
 
 async def crypto_call(method: str, data: Optional[dict] = None) -> dict:
@@ -301,11 +292,8 @@ async def start(message: Message, bot: Bot):
 @router.callback_query(F.data == "check_sub")
 async def check_sub(call: CallbackQuery, bot: Bot):
     save_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
-    if await is_subscribed(bot, call.from_user.id):
-        await call.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_keyboard(call.from_user.id))
-        await call.answer()
-    else:
-        await call.answer("Подписка пока не найдена. Подпишитесь и попробуйте снова.", show_alert=True)
+    await call.message.edit_text("✅ Доступ открыт.", reply_markup=main_keyboard(call.from_user.id))
+    await call.answer()
 
 
 @router.callback_query(F.data == "home")
