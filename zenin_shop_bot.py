@@ -18,6 +18,8 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ContentType, ParseMode
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
@@ -39,7 +41,7 @@ CHANNEL = os.getenv("CHANNEL", "@darknessware")
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/darknessware")
 SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/snexbog")
 SHOP_NAME = os.getenv("SHOP_NAME", "Darkness Shop")
-PRODUCT_NAME = os.getenv("PRODUCT_NAME", "Zenin APK 1.0")
+PRODUCT_NAME = os.getenv("PRODUCT_NAME", "Zenin 1.0")
 PUBLIC_URL = os.getenv("PUBLIC_URL", "")
 PORT = int(os.getenv("PORT", "8080"))
 
@@ -56,6 +58,11 @@ APK_PATH = ROOT / "Zenin_1.0.apk"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 router = Router()
+
+
+class AdminState(StatesGroup):
+    upload_file = State()
+    broadcast = State()
 
 
 # ============================ DB ============================
@@ -131,22 +138,23 @@ def kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     )
 
 
-def main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🛍 Продукты", callback_data="products")],
-            [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
-            [InlineKeyboardButton(text="📢 Канал", url=CHANNEL_URL)],
-        ]
-    )
+def main_keyboard(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🛍 Каталог", callback_data="products")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
+        [InlineKeyboardButton(text="💬 Поддержка", url=SUPPORT_URL), InlineKeyboardButton(text="📢 Канал", url=CHANNEL_URL)],
+    ]
+    if user_id == ADMIN_ID:
+        rows.insert(0, [InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def methods_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💎 CryptoBot", callback_data="method:crypto")],
             [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="method:stars")],
-            [InlineKeyboardButton(text="₽ Рубли", callback_data="method:rub")],
+            [InlineKeyboardButton(text="💎 CryptoBot USDT", callback_data="method:crypto")],
+            [InlineKeyboardButton(text="₽ Рубли — реселлер", url=SUPPORT_URL)],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="products")],
         ]
     )
@@ -178,10 +186,11 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
 def admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
-            [InlineKeyboardButton(text="🧾 Последние заказы", callback_data="admin:orders")],
-            [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users")],
-            [InlineKeyboardButton(text="🏠 Меню", callback_data="home")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"), InlineKeyboardButton(text="🧾 Заказы", callback_data="admin:orders")],
+            [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users"), InlineKeyboardButton(text="📦 Товар", callback_data="admin:file")],
+            [InlineKeyboardButton(text="📨 Рассылка", callback_data="admin:broadcast"), InlineKeyboardButton(text="💳 Оплаты", callback_data="admin:payments")],
+            [InlineKeyboardButton(text="🛡 Проверки", callback_data="admin:health"), InlineKeyboardButton(text="🏷 Тарифы", callback_data="admin:prices")],
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="home")],
         ]
     )
 
@@ -235,9 +244,9 @@ async def deliver(bot: Bot, order_id: int) -> bool:
     if not APK_PATH.exists():
         await bot.send_message(
             order["user_id"],
-            "✅ Оплата подтверждена, но файл пока обновляется. Поддержка: " + SUPPORT_URL,
+            "✅ Оплата подтверждена, но товарный файл пока не загружен. Поддержка: " + SUPPORT_URL,
         )
-        await bot.send_message(ADMIN_ID, f"⚠️ Заказ #{order_id} оплачен, но APK не загружен. Используйте /setapk")
+        await bot.send_message(ADMIN_ID, f"⚠️ Заказ #{order_id} оплачен, но товарный файл не загружен. Открой админ-панель → Товар.")
         return False
     await bot.send_document(
         order["user_id"],
@@ -281,8 +290,11 @@ async def start(message: Message, bot: Bot):
     if not await require_subscription(message, bot):
         return
     await message.answer(
-        f"✨ Добро пожаловать в <b>{SHOP_NAME}</b>!\n\nВыберите нужный раздел:",
-        reply_markup=main_keyboard(),
+        f"<b>🖤 {SHOP_NAME}</b>\n\n"
+        f"<b>{PRODUCT_NAME}</b> — приватный цифровой товар.\n"
+        "Оплата доступна через Stars, CryptoBot и реселлера в рублях.\n\n"
+        "Выберите раздел ниже:",
+        reply_markup=main_keyboard(message.from_user.id),
     )
 
 
@@ -290,7 +302,7 @@ async def start(message: Message, bot: Bot):
 async def check_sub(call: CallbackQuery, bot: Bot):
     save_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     if await is_subscribed(bot, call.from_user.id):
-        await call.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_keyboard())
+        await call.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_keyboard(call.from_user.id))
         await call.answer()
     else:
         await call.answer("Подписка пока не найдена. Подпишитесь и попробуйте снова.", show_alert=True)
@@ -300,7 +312,7 @@ async def check_sub(call: CallbackQuery, bot: Bot):
 async def home(call: CallbackQuery, bot: Bot):
     if not await require_subscription(call, bot):
         return
-    await call.message.edit_text(f"<b>{SHOP_NAME}</b>\nВыберите раздел:", reply_markup=main_keyboard())
+    await call.message.edit_text(f"<b>{SHOP_NAME}</b>\nВыберите раздел:", reply_markup=main_keyboard(call.from_user.id))
     await call.answer()
 
 
@@ -310,7 +322,7 @@ async def show_products(call: CallbackQuery, bot: Bot):
         return
     await call.message.edit_text(
         "<b>🛍 Продукты</b>\n\nВыберите продукт:",
-        reply_markup=kb([[('📱 Zenin APK 1.0', 'product:zenin')], [('⬅️ Назад', 'home')]]),
+        reply_markup=kb([[(f'📱 {PRODUCT_NAME}', 'product:zenin')], [('⬅️ Назад', 'home')]]),
     )
     await call.answer()
 
@@ -319,7 +331,11 @@ async def show_products(call: CallbackQuery, bot: Bot):
 async def show_product(call: CallbackQuery, bot: Bot):
     if not await require_subscription(call, bot):
         return
-    await call.message.edit_text(f"<b>{PRODUCT_NAME}</b>\n\nВыберите способ оплаты:", reply_markup=methods_keyboard())
+    await call.message.edit_text(
+        f"<b>📱 {PRODUCT_NAME}</b>\n\n"
+        "Выберите удобный способ оплаты. После подтверждения бот автоматически выдаст товар.",
+        reply_markup=methods_keyboard(),
+    )
     await call.answer()
 
 
@@ -561,24 +577,40 @@ async def support(call: CallbackQuery):
 
 # ============================ ADMIN ============================
 @router.message(Command("setapk"), F.from_user.id == ADMIN_ID)
-async def set_apk_command(message: Message):
-    await message.answer("Отправьте APK как документ с подписью <code>/setapk</code>.")
+async def set_apk_command(message: Message, state: FSMContext):
+    await state.set_state(AdminState.upload_file)
+    await message.answer("📦 Отправьте товарный файл документом.")
 
 
-@router.message(F.document, F.caption == "/setapk", F.from_user.id == ADMIN_ID)
-async def upload_apk(message: Message, bot: Bot):
-    name = (message.document.file_name or "").lower()
-    if not name.endswith(".apk"):
-        return await message.answer("Нужен файл с расширением .apk")
-    temp = APK_PATH.with_suffix(".apk.tmp")
+@router.callback_query(F.data == "admin:file", F.from_user.id == ADMIN_ID)
+async def admin_file(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminState.upload_file)
+    status = "загружен" if APK_PATH.exists() else "не загружен"
+    await call.message.edit_text(
+        f"📦 <b>Товарный файл</b>\n\nСтатус: <b>{status}</b>\nОтправьте новый файл документом прямо сюда.",
+        reply_markup=admin_keyboard(),
+    )
+    await call.answer()
+
+
+@router.message(AdminState.upload_file, F.document, F.from_user.id == ADMIN_ID)
+async def upload_product_file(message: Message, bot: Bot, state: FSMContext):
+    temp = APK_PATH.with_suffix(".tmp")
     await bot.download(message.document, destination=temp)
     shutil.move(temp, APK_PATH)
-    await message.answer(f"✅ APK сохранён: {APK_PATH.name}")
+    await state.clear()
+    await message.answer(f"✅ Товарный файл сохранён: {message.document.file_name or APK_PATH.name}", reply_markup=admin_keyboard())
 
 
 @router.message(Command("admin"), F.from_user.id == ADMIN_ID)
 async def admin(message: Message):
-    await message.answer("⚙️ Админ-панель", reply_markup=admin_keyboard())
+    await message.answer("⚙️ <b>Админ-панель</b>", reply_markup=admin_keyboard())
+
+
+@router.callback_query(F.data == "admin:menu", F.from_user.id == ADMIN_ID)
+async def admin_menu(call: CallbackQuery):
+    await call.message.edit_text("⚙️ <b>Админ-панель</b>\nВыберите действие:", reply_markup=admin_keyboard())
+    await call.answer()
 
 
 @router.callback_query(F.data == "admin:stats", F.from_user.id == ADMIN_ID)
@@ -589,6 +621,7 @@ async def admin_stats(call: CallbackQuery):
         pending = db.execute("SELECT COUNT(*) FROM orders WHERE status='pending'").fetchone()[0]
         crypto = db.execute("SELECT COUNT(*) FROM orders WHERE status='paid' AND method='crypto'").fetchone()[0]
         stars = db.execute("SELECT COUNT(*) FROM orders WHERE status='paid' AND method='stars'").fetchone()[0]
+        rub = db.execute("SELECT COUNT(*) FROM orders WHERE status='paid' AND method='rub'").fetchone()[0]
     await call.message.edit_text(
         f"📊 <b>Статистика</b>\n\n"
         f"👤 Пользователей: <b>{users}</b>\n"
@@ -596,7 +629,8 @@ async def admin_stats(call: CallbackQuery):
         f"⏳ Ожидают: <b>{pending}</b>\n"
         f"💎 Crypto: <b>{crypto}</b>\n"
         f"⭐ Stars: <b>{stars}</b>\n"
-        f"📦 APK: <b>{'загружен' if APK_PATH.exists() else 'не загружен'}</b>",
+        f"₽ RUB: <b>{rub}</b>\n"
+        f"📦 Товар: <b>{'загружен' if APK_PATH.exists() else 'не загружен'}</b>",
         reply_markup=admin_keyboard(),
     )
     await call.answer()
@@ -631,6 +665,75 @@ async def admin_users(call: CallbackQuery):
     await call.answer()
 
 
+@router.callback_query(F.data == "admin:prices", F.from_user.id == ADMIN_ID)
+async def admin_prices(call: CallbackQuery):
+    text = "🏷 <b>Тарифы</b>\n\n" + "\n".join(
+        f"• {p['title']}: {p['stars']} ⭐ / {p['usdt']} USDT / {p['rub']} ₽"
+        for p in PLANS.values()
+    )
+    await call.message.edit_text(text, reply_markup=admin_keyboard())
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:payments", F.from_user.id == ADMIN_ID)
+async def admin_payments(call: CallbackQuery):
+    text = (
+        "💳 <b>Оплаты</b>\n\n"
+        "⭐ Telegram Stars: <b>включено</b>\n"
+        f"💎 CryptoBot: <b>{'включено' if CRYPTO_PAY_TOKEN else 'нет токена'}</b>\n"
+        f"₽ Рубли через реселлера: <b>{SUPPORT_URL}</b>\n"
+        f"₽ Telegram Payments: <b>{'включено' if RUB_PROVIDER_TOKEN else 'нет provider token'}</b>"
+    )
+    await call.message.edit_text(text, reply_markup=admin_keyboard())
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:health", F.from_user.id == ADMIN_ID)
+async def admin_health(call: CallbackQuery, bot: Bot):
+    me = await bot.get_me()
+    channel_status = "ошибка"
+    with suppress(Exception):
+        member = await bot.get_chat_member(CHANNEL, me.id)
+        channel_status = member.status.value
+    text = (
+        "🛡 <b>Проверки</b>\n\n"
+        f"Бот: @{me.username}\n"
+        f"Канал: {CHANNEL}\n"
+        f"Статус в канале: <b>{channel_status}</b>\n"
+        f"Health: <b>ok</b>\n"
+        f"Файл товара: <b>{'есть' if APK_PATH.exists() else 'нет'}</b>"
+    )
+    await call.message.edit_text(text, reply_markup=admin_keyboard())
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:broadcast", F.from_user.id == ADMIN_ID)
+async def admin_broadcast_entry(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminState.broadcast)
+    await call.message.edit_text("📨 Отправьте текст рассылки одним сообщением.", reply_markup=admin_keyboard())
+    await call.answer()
+
+
+@router.message(AdminState.broadcast, F.from_user.id == ADMIN_ID)
+async def admin_broadcast_send(message: Message, bot: Bot, state: FSMContext):
+    text = message.html_text or message.text or ""
+    if not text.strip():
+        return await message.answer("Отправьте текст рассылки.")
+    with connect() as db:
+        ids = [r[0] for r in db.execute("SELECT user_id FROM users").fetchall()]
+    ok = 0
+    bad = 0
+    for uid in ids:
+        try:
+            await bot.send_message(uid, text)
+            ok += 1
+            await asyncio.sleep(0.04)
+        except Exception:
+            bad += 1
+    await state.clear()
+    await message.answer(f"✅ Рассылка завершена. Доставлено: {ok}, ошибок: {bad}", reply_markup=admin_keyboard())
+
+
 @router.message(Command("refund"), F.from_user.id == ADMIN_ID)
 async def refund_stars(message: Message, bot: Bot):
     parts = (message.text or "").split(maxsplit=2)
@@ -652,14 +755,7 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_my_commands(
-        [
-            BotCommand(command="start", description="Открыть магазин"),
-            BotCommand(command="admin", description="Админ-панель"),
-            BotCommand(command="setapk", description="Загрузить APK"),
-            BotCommand(command="refund", description="Возврат Stars"),
-        ]
-    )
+    await bot.set_my_commands([BotCommand(command="start", description="Открыть магазин")])
     asyncio.create_task(health_server())
     asyncio.create_task(keep_alive())
     try:
