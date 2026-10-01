@@ -18,8 +18,6 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ContentType, ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
@@ -34,6 +32,7 @@ from aiogram.types import (
 # ============================ CONFIG ============================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8641853420:AAFafrUy1ZOz851jFlRTq_3CJMCHZDkE1FU")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN", "641055:AAjyk1j47cBTblrloklrJrqULS4xfoKguA2")
+RUB_PROVIDER_TOKEN = os.getenv("RUB_PROVIDER_TOKEN", "")
 CRYPTO_PAY_BASE = os.getenv("CRYPTO_PAY_BASE", "https://pay.crypt.bot/api")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "956327348"))
 CHANNEL = os.getenv("CHANNEL", "@darknessware")
@@ -45,10 +44,9 @@ PUBLIC_URL = os.getenv("PUBLIC_URL", "")
 PORT = int(os.getenv("PORT", "8080"))
 
 PLANS = {
-    "7d": {"title": "7 дней", "stars": 200, "usdt": "2"},
-    "30d": {"title": "30 дней", "stars": 400, "usdt": "4"},
-    "forever": {"title": "Навсегда", "stars": 600, "usdt": "7.5"},
-    "test": {"title": "Тестовая оплата", "stars": 1, "usdt": "0.01"},
+    "7d": {"title": "7 дней", "stars": 200, "usdt": "2", "rub": 200},
+    "30d": {"title": "30 дней", "stars": 400, "usdt": "4", "rub": 400},
+    "forever": {"title": "Навсегда", "stars": 600, "usdt": "7.5", "rub": 750},
 }
 
 ROOT = Path(os.getenv("DATA_DIR", str(Path(__file__).resolve().parent)))
@@ -58,10 +56,6 @@ APK_PATH = ROOT / "Zenin_1.0.apk"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 router = Router()
-
-
-class PayState(StatesGroup):
-    crypto_amount = State()
 
 
 # ============================ DB ============================
@@ -151,9 +145,8 @@ def methods_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="💎 CryptoBot", callback_data="method:crypto")],
-            [InlineKeyboardButton(text="🧪 CryptoBot тест на любую сумму", callback_data="crypto:test")],
             [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data="method:stars")],
-            [InlineKeyboardButton(text="₽ Рубли — реселлер", url=SUPPORT_URL)],
+            [InlineKeyboardButton(text="₽ Рубли", callback_data="method:rub")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="products")],
         ]
     )
@@ -162,7 +155,12 @@ def methods_keyboard() -> InlineKeyboardMarkup:
 def method_plans_keyboard(method: str) -> InlineKeyboardMarkup:
     rows = []
     for code, p in PLANS.items():
-        price = f"{p['usdt']} USDT" if method == "crypto" else f"{p['stars']} ⭐"
+        if method == "crypto":
+            price = f"{p['usdt']} USDT"
+        elif method == "rub":
+            price = f"{p['rub']} ₽"
+        else:
+            price = f"{p['stars']} ⭐"
         rows.append([InlineKeyboardButton(text=f"{p['title']} — {price}", callback_data=f"{method}:{code}")])
     rows.append([InlineKeyboardButton(text="⬅️ К способам оплаты", callback_data="product:zenin")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -330,9 +328,10 @@ async def choose_method_plan(call: CallbackQuery, bot: Bot):
     if not await require_subscription(call, bot):
         return
     method = call.data.split(":", 1)[1]
-    if method not in {"crypto", "stars"}:
+    if method not in {"crypto", "stars", "rub"}:
         return await call.answer("Способ оплаты не найден", show_alert=True)
-    title = "CryptoBot" if method == "crypto" else "Telegram Stars"
+    titles = {"crypto": "CryptoBot", "stars": "Telegram Stars", "rub": "Рубли"}
+    title = titles[method]
     await call.message.edit_text(
         f"<b>{PRODUCT_NAME}</b>\nОплата: {title}\n\nВыберите срок доступа:",
         reply_markup=method_plans_keyboard(method),
@@ -369,6 +368,41 @@ async def pay_stars(call: CallbackQuery, bot: Bot):
     await call.answer()
 
 
+@router.callback_query(F.data.startswith("rub:"))
+async def pay_rub(call: CallbackQuery, bot: Bot):
+    if not await require_subscription(call, bot):
+        return
+    if not RUB_PROVIDER_TOKEN:
+        return await call.answer(
+            "Оплата рублями ещё не подключена. Нужен provider token от ЮKassa/другого провайдера.",
+            show_alert=True,
+        )
+    plan = call.data.split(":", 1)[1]
+    if plan not in PLANS:
+        return await call.answer("Тариф не найден", show_alert=True)
+    p = PLANS[plan]
+    amount_kopecks = int(p["rub"] * 100)
+    payload = f"rub:{call.from_user.id}:{plan}:{int(datetime.now().timestamp() * 1000)}"
+    with connect() as db:
+        cur = db.execute(
+            """INSERT INTO orders(user_id,plan,method,amount,currency,status,payload,created_at)
+               VALUES(?,?,?,?,?,'pending',?,?)""",
+            (call.from_user.id, plan, "rub", str(amount_kopecks), "RUB", payload, now()),
+        )
+        order_id = cur.lastrowid
+        db.commit()
+    await bot.send_invoice(
+        chat_id=call.from_user.id,
+        title=PRODUCT_NAME,
+        description=f"Доступ: {p['title']} | Заказ #{order_id}",
+        payload=payload,
+        currency="RUB",
+        prices=[LabeledPrice(label=f"Zenin — {p['title']}", amount=amount_kopecks)],
+        provider_token=RUB_PROVIDER_TOKEN,
+    )
+    await call.answer()
+
+
 @router.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
     with connect() as db:
@@ -395,99 +429,10 @@ async def successful_stars(message: Message, bot: Bot):
             (now(), payment.telegram_payment_charge_id, order["id"]),
         )
         db.commit()
-    await message.answer("✅ Оплата звёздами подтверждена. Выдаю товар…")
+    method_title = "рублями" if order["method"] == "rub" else "звёздами"
+    await message.answer(f"✅ Оплата {method_title} подтверждена. Выдаю товар…")
     await deliver(bot, order["id"])
-    await bot.send_message(ADMIN_ID, f"💰 Новый Stars-заказ #{order['id']} от {message.from_user.id}")
-
-
-@router.callback_query(F.data == "crypto:test")
-async def crypto_test_amount(call: CallbackQuery, bot: Bot, state: FSMContext):
-    if not await require_subscription(call, bot):
-        return
-    await state.set_state(PayState.crypto_amount)
-    await call.message.answer(
-        "🧪 <b>Тестовая оплата CryptoBot</b>\n\n"
-        "Введите любую сумму в USDT для теста.\n"
-        "Пример: <code>0.01</code> или <code>1.5</code>"
-    )
-    await call.answer()
-
-
-@router.message(PayState.crypto_amount)
-async def crypto_test_create(message: Message, bot: Bot, state: FSMContext):
-    save_user_from_message(message)
-    raw = (message.text or "").replace(",", ".").strip()
-    try:
-        amount = Decimal(raw)
-    except Exception:
-        return await message.answer("Введите сумму числом. Пример: <code>0.01</code>")
-    if amount <= 0:
-        return await message.answer("Сумма должна быть больше 0.")
-    if amount > Decimal("10000"):
-        return await message.answer("Слишком большая сумма для теста. Введите меньше 10000 USDT.")
-    amount_s = format(amount.quantize(Decimal("0.01")), "f")
-    payload = f"crypto:{message.from_user.id}:test:{int(datetime.now().timestamp() * 1000)}"
-    try:
-        invoice = await crypto_call(
-            "createInvoice",
-            {
-                "currency_type": "crypto",
-                "asset": "USDT",
-                "amount": amount_s,
-                "description": f"{PRODUCT_NAME} — тестовая оплата",
-                "payload": payload,
-                "expires_in": 3600,
-            },
-        )
-    except Exception as exc:
-        logging.exception("create test invoice failed")
-        return await message.answer(f"Crypto Pay временно недоступен: {exc}")
-    with connect() as db:
-        cur = db.execute(
-            """INSERT INTO orders(user_id,plan,method,amount,currency,status,external_id,payload,created_at)
-               VALUES(?,?,?,?,?,'pending',?,?,?)""",
-            (message.from_user.id, "test", "crypto", amount_s, "USDT", str(invoice["invoice_id"]), payload, now()),
-        )
-        order_id = cur.lastrowid
-        db.commit()
-    await state.clear()
-    pay_url = invoice.get("bot_invoice_url") or invoice.get("mini_app_invoice_url") or invoice.get("web_app_invoice_url")
-    await message.answer(
-        f"🧪 Тестовый CryptoBot счёт #{order_id}\nСумма: <b>{amount_s} USDT</b>\nСчёт действует 1 час.",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="💎 Оплатить", url=pay_url)],
-                [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"verify:{order_id}")],
-                [InlineKeyboardButton(text="🧪 Тест: засчитать оплату", callback_data=f"testpaid:{order_id}")],
-            ]
-        ),
-    )
-
-
-@router.callback_query(F.data.startswith("testpaid:"), F.from_user.id == ADMIN_ID)
-async def test_paid(call: CallbackQuery, bot: Bot):
-    try:
-        order_id = int(call.data.split(":", 1)[1])
-    except ValueError:
-        return await call.answer("Неверный заказ", show_alert=True)
-    with connect() as db:
-        order = db.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-        if not order:
-            return await call.answer("Заказ не найден", show_alert=True)
-        if order["status"] != "paid":
-            db.execute(
-                "UPDATE orders SET status='paid', paid_at=? WHERE id=?",
-                (now(), order_id),
-            )
-            db.commit()
-    await call.answer("Тестовая оплата засчитана", show_alert=True)
-    await call.message.answer(f"✅ Тестовая оплата заказа #{order_id} засчитана. Выдаю товар…")
-    await deliver(bot, order_id)
-
-
-@router.callback_query(F.data.startswith("testpaid:"))
-async def test_paid_forbidden(call: CallbackQuery):
-    await call.answer("Тестовая оплата доступна только владельцу.", show_alert=True)
+    await bot.send_message(ADMIN_ID, f"💰 Новый {order['method']}-заказ #{order['id']} от {message.from_user.id}")
 
 
 @router.callback_query(F.data.startswith("crypto:"))
