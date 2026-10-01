@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+.env
+.git
+*.db
+*.db-*
+Zenin_1.0.apk
