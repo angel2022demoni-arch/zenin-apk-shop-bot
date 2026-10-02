@@ -31,7 +31,7 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8641853420:AAFafrUy1ZOz851jFlRTq_3CJMCHZDkE1FU")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "956327348"))
 SHOP_NAME = os.getenv("SHOP_NAME", "Darkness Shop")
-PRODUCT_NAME = os.getenv("PRODUCT_NAME", "Standrise Rework")
+PRODUCT_NAME = os.getenv("PRODUCT_NAME", "StandRise Rework")
 SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/snexbog")
 PUBLIC_URL = os.getenv("PUBLIC_URL", "")
 PORT = int(os.getenv("PORT", "8080"))
@@ -150,13 +150,22 @@ def keygen() -> str:
 
 def main_kb(user_id: int) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="🚀 Купить Standrise Rework", callback_data="buy:open")],
+        [InlineKeyboardButton(text="🛍 Продукты", callback_data="products")],
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
         [InlineKeyboardButton(text="💬 Поддержка", url=SUPPORT_URL)],
     ]
     if user_id == ADMIN_ID:
         rows.insert(0, [InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def products_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"🚀 {PRODUCT_NAME}", callback_data="buy:open")],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")],
+        ]
+    )
 
 
 def buy_kb() -> InlineKeyboardMarkup:
@@ -189,7 +198,7 @@ async def create_invite(bot: Bot, order_id: int) -> str:
         return ""
     link = await bot.create_chat_invite_link(
         chat_id=int(group_id),
-        name=f"Standrise #{order_id}",
+        name=f"StandRise #{order_id}",
         member_limit=1,
         creates_join_request=False,
     )
@@ -269,15 +278,25 @@ async def start(message: Message):
 
 @router.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
+    await call.answer()
     await call.message.edit_text(
         f"<b>⚡ {SHOP_NAME}</b>\n\nВыберите действие:",
         reply_markup=main_kb(call.from_user.id),
     )
+
+
+@router.callback_query(F.data == "products")
+async def products(call: CallbackQuery):
     await call.answer()
+    await call.message.edit_text(
+        "<b>🛍 Продукты</b>\n\nДоступный товар:",
+        reply_markup=products_kb(),
+    )
 
 
 @router.callback_query(F.data == "buy:open")
 async def buy_open(call: CallbackQuery):
+    await call.answer()
     await call.message.edit_text(
         f"<b>🚀 {PRODUCT_NAME}</b>\n\n"
         f"Доступ: <b>{PLAN_TITLE}</b>\n"
@@ -285,7 +304,6 @@ async def buy_open(call: CallbackQuery):
         "После оплаты бот выдаст ключ и одноразовую ссылку в приватную группу.",
         reply_markup=buy_kb(),
     )
-    await call.answer()
 
 
 @router.callback_query(F.data == f"pay:{PLAN_CODE}")
@@ -347,10 +365,10 @@ async def paid(message: Message, bot: Bot):
 
 @router.callback_query(F.data == "profile")
 async def profile(call: CallbackQuery):
+    await call.answer()
     save_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     with db() as con:
         total = con.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (call.from_user.id,)).fetchone()[0]
-        paid_count = con.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (call.from_user.id,)).fetchone()[0]
         last = con.execute(
             "SELECT * FROM orders WHERE user_id=? AND status='paid' ORDER BY id DESC LIMIT 1",
             (call.from_user.id,),
@@ -371,18 +389,16 @@ async def profile(call: CallbackQuery):
         f"Username: <b>{username}</b>\n"
         f"Регистрация: <b>{pretty_dt(user['created_at'] if user else now())}</b>\n\n"
         f"Заказов всего: <b>{total}</b>\n"
-        f"Оплачено: <b>{paid_count}</b>\n"
         f"Активный доступ: <b>{active}</b>\n"
         f"Ключ: <code>{key}</code>\n"
         f"До: <b>{until}</b>",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 Купить доступ", callback_data="buy:open")],
+                [InlineKeyboardButton(text="🛍 Продукты", callback_data="products")],
                 [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")],
             ]
         ),
     )
-    await call.answer()
 
 
 @router.message(Command("admin"), F.from_user.id == ADMIN_ID)
@@ -392,12 +408,13 @@ async def admin_cmd(message: Message):
 
 @router.callback_query(F.data == "admin:menu", F.from_user.id == ADMIN_ID)
 async def admin_menu(call: CallbackQuery):
-    await call.message.edit_text("⚙️ <b>Админ-панель</b>\nВыберите раздел:", reply_markup=admin_kb())
     await call.answer()
+    await call.message.edit_text("⚙️ <b>Админ-панель</b>\nВыберите раздел:", reply_markup=admin_kb())
 
 
 @router.callback_query(F.data == "admin:stats", F.from_user.id == ADMIN_ID)
 async def admin_stats(call: CallbackQuery):
+    await call.answer()
     with db() as con:
         users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         orders = con.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
@@ -408,16 +425,15 @@ async def admin_stats(call: CallbackQuery):
         f"📊 <b>Статистика</b>\n\n"
         f"Пользователей: <b>{users}</b>\n"
         f"Заказов: <b>{orders}</b>\n"
-        f"Оплачено: <b>{paid_count}</b>\n"
         f"Ожидают: <b>{pending}</b>\n"
         f"Заработано: <b>{stars} ⭐</b>",
         reply_markup=admin_kb(),
     )
-    await call.answer()
 
 
 @router.callback_query(F.data == "admin:orders", F.from_user.id == ADMIN_ID)
 async def admin_orders(call: CallbackQuery):
+    await call.answer()
     with db() as con:
         rows = con.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 12").fetchall()
     text = "🧾 <b>Последние заказы</b>\n\n"
@@ -426,11 +442,11 @@ async def admin_orders(call: CallbackQuery):
         for r in rows
     ) or "Заказов пока нет."
     await call.message.edit_text(text, reply_markup=admin_kb())
-    await call.answer()
 
 
 @router.callback_query(F.data == "admin:users", F.from_user.id == ADMIN_ID)
 async def admin_users(call: CallbackQuery):
+    await call.answer()
     with db() as con:
         rows = con.execute("SELECT * FROM users ORDER BY last_seen DESC LIMIT 15").fetchall()
     text = "👥 <b>Пользователи</b>\n\n"
@@ -439,11 +455,11 @@ async def admin_users(call: CallbackQuery):
         for r in rows
     ) or "Пользователей пока нет."
     await call.message.edit_text(text, reply_markup=admin_kb())
-    await call.answer()
 
 
 @router.callback_query(F.data == "admin:group", F.from_user.id == ADMIN_ID)
 async def admin_group(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     current = setting("private_group_id", "не указана")
     await state.set_state(AdminState.group_id)
     await call.message.edit_text(
@@ -453,7 +469,6 @@ async def admin_group(call: CallbackQuery, state: FSMContext):
         "Затем отправь ID группы в формате <code>-100...</code>.",
         reply_markup=admin_kb(),
     )
-    await call.answer()
 
 
 @router.message(AdminState.group_id, F.from_user.id == ADMIN_ID)
@@ -471,6 +486,7 @@ async def save_group(message: Message, state: FSMContext, bot: Bot):
 
 @router.callback_query(F.data == "admin:health", F.from_user.id == ADMIN_ID)
 async def admin_health(call: CallbackQuery, bot: Bot):
+    await call.answer()
     me = await bot.get_me()
     group_id = setting("private_group_id")
     group_status = "не указана"
@@ -489,14 +505,13 @@ async def admin_health(call: CallbackQuery, bot: Bot):
         f"Health: <b>ok</b>",
         reply_markup=admin_kb(),
     )
-    await call.answer()
 
 
 @router.callback_query(F.data == "admin:broadcast", F.from_user.id == ADMIN_ID)
 async def broadcast_entry(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     await state.set_state(AdminState.broadcast)
     await call.message.edit_text("📨 Отправьте текст рассылки.", reply_markup=admin_kb())
-    await call.answer()
 
 
 @router.message(AdminState.broadcast, F.from_user.id == ADMIN_ID)
